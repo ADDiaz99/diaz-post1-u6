@@ -184,7 +184,33 @@ funcionamiento. Cada uno se trató por separado:
 
 ### Parte 2: crecimiento del proyecto
 
-En desarrollo.
+#### Antipatrón identificado: Golden Hammer
+
+Las tres campañas se agregaron como eslabones de la cadena de validación (commit
+`feat: agregar 3 campanas de descuento como eslabones...`). La evidencia:
+
+- **No tienen dependencia de orden.** `PromocionBlackFriday`, `PromocionCorporativo` y
+  `PromocionVolumen` se pueden ejecutar en cualquier orden y el resultado es el mismo, porque
+  `aplicarDescuentoCampana()` siempre conserva el mayor (`ContextoPedido.java`, líneas 32 a 34).
+  Esa es justo la propiedad que **sí** justifica la cadena en `ValidadorStock` y
+  `ValidadorCliente`: el stock debe revisarse antes que la mora.
+- **Nunca cortan el flujo.** Ninguna de las tres llama a `rechazar()`: solo escriben
+  (`PromocionBlackFriday.java` línea 20, `PromocionCorporativo.java` línea 21,
+  `PromocionVolumen.java` línea 15). Heredan de `ValidadorPedido`, cuyo contrato es "decidir si
+  el pedido continúa o se rechaza", y no validan nada.
+- **Comparten un campo mutable.** Las tres compiten por escribir `descuentoCampana`
+  (`ContextoPedido.java`, línea 13). Si mercadeo pidiera **sumar** campañas en vez de tomar la
+  mayor, la regla tendría que vivir en `aplicarDescuentoCampana()` y depender del orden de
+  llegada de los eslabones: la cadena no lo expresa sin ambigüedad.
+- **El orquestador quedó acoplado a ambas cosas.** `GestorPedidos` encadena cinco eslabones
+  (líneas 43 y 44) y luego combina a mano el descuento de Strategy con el de la cadena
+  (línea 65): dos mecanismos para una misma pregunta, "¿qué descuento aplica?".
+- **La razón fue "ya funcionó".** Chain of Responsibility resolvió bien las validaciones de la
+  Parte 1, y se reutilizó porque los eslabones "ya sabían conectarse", no porque el problema
+  nuevo tuviera forma de cadena. Eso es Golden Hammer: aplicar la herramienta conocida a un
+  problema con otra forma.
+
+Siguiente paso: mover las tres campañas a `EstrategiaDescuento` y eliminar los eslabones.
 
 ## Herramientas utilizadas
 
