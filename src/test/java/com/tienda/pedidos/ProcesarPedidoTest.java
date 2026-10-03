@@ -9,7 +9,6 @@ import org.junit.jupiter.api.Test;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.boot.test.context.SpringBootTest;
 import org.springframework.context.annotation.Import;
-import org.springframework.dao.EmptyResultDataAccessException;
 import org.springframework.jdbc.core.JdbcTemplate;
 import org.springframework.transaction.annotation.Transactional;
 
@@ -121,10 +120,20 @@ class ProcesarPedidoTest {
     }
 
     @Test
-    void clienteInexistente_elCodigoActualLanzaExcepcion() {
-        // Caracteriza un defecto del código original: queryForObject lanza
-        // EmptyResultDataAccessException cuando no hay filas, así que la rama
-        // "if (tipoCliente == null) -> Cliente no registrado" nunca se ejecuta.
-        assertThrows(EmptyResultDataAccessException.class, () -> gestor.procesarPedido(pedido(99, 3, 1)));
+    void clienteInexistenteSeRechaza() {
+        // Antes de la corrección esto lanzaba EmptyResultDataAccessException:
+        // la rama "Cliente no registrado" del código original nunca se ejecutaba.
+        ResultadoPedido r = gestor.procesarPedido(pedido(99, 3, 1));
+
+        assertFalse(r.isConfirmado());
+        assertEquals("Cliente no registrado", r.getMotivoRechazo());
+    }
+
+    @Test
+    void productoInexistenteSeRechaza() {
+        ResultadoPedido r = gestor.procesarPedido(pedido(4, 99, 1));
+
+        assertFalse(r.isConfirmado());
+        assertEquals("Producto no registrado: 99", r.getMotivoRechazo());
     }
 }

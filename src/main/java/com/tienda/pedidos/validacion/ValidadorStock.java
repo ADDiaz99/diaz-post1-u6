@@ -6,7 +6,7 @@ import org.springframework.stereotype.Component;
 
 import java.util.List;
 
-/** Eslabón 1: el pedido tiene ítems y hay stock suficiente de cada uno. */
+/** Eslabón 1: el pedido tiene ítems, cada producto existe y hay stock suficiente. */
 @Component
 public class ValidadorStock extends ValidadorPedido {
 
@@ -26,8 +26,15 @@ public class ValidadorStock extends ValidadorPedido {
             return;
         }
         for (ItemPedido item : items) {
-            Integer stock = jdbcTemplate.queryForObject(
+            // queryForList devuelve una lista vacía si el producto no existe;
+            // queryForObject lanzaba EmptyResultDataAccessException.
+            List<Integer> stocks = jdbcTemplate.queryForList(
                     "SELECT stock FROM inventario WHERE producto_id = ?", Integer.class, item.getProductoId());
+            if (stocks.isEmpty()) {
+                contexto.rechazar("Producto no registrado: " + item.getProductoId());
+                return;
+            }
+            Integer stock = stocks.get(0);
             if (stock == null || stock < item.getCantidad()) {
                 contexto.rechazar("Stock insuficiente: producto " + item.getProductoId());
                 return;
