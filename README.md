@@ -51,7 +51,9 @@ src/main/java/com/tienda/pedidos/
 ├── descuento/                             Strategy
 │   ├── EstrategiaDescuento.java
 │   ├── DescuentoVip / DescuentoFrecuente / DescuentoEstandar
-│   └── SelectorEstrategiaDescuento.java   regla por tipo de cliente
+│   ├── DescuentoBlackFriday / DescuentoCorporativo / DescuentoVolumen
+│   ├── SelectorEstrategiaDescuento.java   regla por tipo de cliente
+│   └── CalculadorDescuentoFinal.java      tipo de cliente vs campañas: gana el mayor
 ├── service/
 │   ├── GestorPedidos.java                 orquestador delgado
 │   ├── PedidoRepository.java / ProductoRepository.java
@@ -59,7 +61,6 @@ src/main/java/com/tienda/pedidos/
 │   └── EmailService.java / EmailServiceConsola.java
 └── config/RelojConfig.java                reloj inyectable (horario de corte)
 ```
-
 
 ## Decisiones de diseño
 
@@ -210,7 +211,40 @@ Las tres campañas se agregaron como eslabones de la cadena de validación (comm
   nuevo tuviera forma de cadena. Eso es Golden Hammer: aplicar la herramienta conocida a un
   problema con otra forma.
 
-Siguiente paso: mover las tres campañas a `EstrategiaDescuento` y eliminar los eslabones.
+#### Corrección: extender el Strategy existente
+
+Las campañas tienen exactamente la forma de `DescuentoVip` o `DescuentoFrecuente`: calculan un
+porcentaje a partir del pedido o del cliente, sin orden y sin cortar el flujo. Por eso se
+modelaron como `EstrategiaDescuento` (`DescuentoBlackFriday`, `DescuentoCorporativo`,
+`DescuentoVolumen`), y `CalculadorDescuentoFinal` combina el descuento por tipo de cliente con
+el de las campañas y aplica el mayor: la misma regla de negocio, en un único método. Si algún
+día las campañas se suman, el cambio es reemplazar un `max()` por un `sum()` en esa clase. La
+cadena de validación vuelve a tener solo `ValidadorStock` y `ValidadorCliente`.
+
+**Alternativa descartada:** mantener las campañas en la cadena. Es la causa del antipatrón
+diagnosticado: reutiliza una herramienta conocida sin verificar que el problema nuevo tenga su
+misma forma. Una segunda cadena solo para promociones tampoco sirve, porque seguiría simulando
+un orden que no existe.
+
+**Eliminar, no comentar.** `PromocionBlackFriday`, `PromocionCorporativo`, `PromocionVolumen` y
+el campo `descuentoCampana` se borraron con `git rm`, no se dejaron comentados. El código
+comentado "por si acaso" es justo el mecanismo que origina un Lava Flow; la referencia histórica
+queda en el historial de Git.
+
+#### Antes y después
+
+`CampanasDescuentoTest` y `BlackFridayTest` se escribieron contra la versión con las campañas en
+la cadena y pasan **sin cambios** después de moverlas a Strategy. Además siguen pasando todas
+las pruebas de la Parte 1:
+
+| Caso | Pedido | Total (cadena y Strategy) |
+|---|---|---|
+| CORPORATIVO (cliente con NIT) | 1 teclado | $267.750 (10 %) |
+| VOLUMEN (más de 20 unidades) | 25 mouse | $2.094.400 (12 %) |
+| CORPORATIVO y VOLUMEN a la vez | 21 mouse, cliente con NIT | $1.759.296 (gana 12 %) |
+| VIP frente a VOLUMEN | 21 mouse, cliente VIP | $1.699.320 (gana VIP 15 %) |
+| BLACK_FRIDAY activa, ESTANDAR | 1 teclado | $223.125 (25 %) |
+| BLACK_FRIDAY activa frente a VIP | 2 monitores | $1.606.500 (gana 25 %) |
 
 ## Herramientas utilizadas
 
@@ -219,3 +253,14 @@ Siguiente paso: mover las tres campañas a `EstrategiaDescuento` y eliminar los 
 
 Se usó Spring Boot 4.1.1 en lugar de 3.x porque es la primera línea con soporte oficial para
 Java 26. Por la misma razón el starter web es `spring-boot-starter-webmvc`, su nombre en Boot 4.
+
+## Conclusiones
+
+La lección más útil de la Parte 1 fue escribir las pruebas antes de tocar el código: sin ellas,
+los dos defectos de la versión de referencia (la cadena que empezaba en el eslabón equivocado y
+el pedido vacío que se confirmaba) habrían pasado como un refactor exitoso. También quedó claro
+que corregir un defecto y refactorizar son cambios distintos y van en commits distintos. La
+Parte 2 mostró que el riesgo no desaparece al conocer un patrón: Chain of Responsibility encajó
+perfecto en las validaciones y, justo por eso, se volvió el martillo para todo lo que vino
+después. La pregunta que separó ambos casos fue concreta: ¿hay un orden real y una razón para
+cortar el flujo? Las validaciones sí; los descuentos no.
