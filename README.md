@@ -37,6 +37,30 @@ de confirmación se imprime en la consola del servidor.
 (debe $300.000), 4 ESTANDAR, 5 ESTANDAR con NIT; productos 1 teclado ($250.000), 2 monitor
 ($900.000), 3 mouse ($80.000) y 4 cable (solo 2 en stock).
 
+## Estructura
+
+```
+src/main/java/com/tienda/pedidos/
+├── controller/PedidoController.java       POST /api/pedidos
+├── dto/                                   PedidoRequest, ItemPedido, ResultadoPedido
+├── validacion/                            Chain of Responsibility
+│   ├── ValidadorPedido.java               eslabón base
+│   ├── ValidadorStock.java                ítems, producto y stock
+│   ├── ValidadorCliente.java              cliente y mora con horario de corte
+│   └── ContextoPedido.java
+├── descuento/                             Strategy
+│   ├── EstrategiaDescuento.java
+│   ├── DescuentoVip / DescuentoFrecuente / DescuentoEstandar
+│   └── SelectorEstrategiaDescuento.java   regla por tipo de cliente
+├── service/
+│   ├── GestorPedidos.java                 orquestador delgado
+│   ├── PedidoRepository.java / ProductoRepository.java
+│   ├── NotificacionPedidoService.java
+│   └── EmailService.java / EmailServiceConsola.java
+└── config/RelojConfig.java                reloj inyectable (horario de corte)
+```
+
+
 ## Decisiones de diseño
 
 ### Parte 1: GestorPedidos
@@ -83,12 +107,45 @@ la misma, y eso, no el número de líneas, es lo que define al God Object.
 líneas del método para asegurarse de no romper la validación de mora, que también compara
 `tipoCliente` (línea 57). Ningún cambio de descuento se puede aislar del resto del flujo.
 
-#### Comportamiento de referencia (antes de refactorizar)
+#### Patrones aplicados
 
-`ProcesarPedidoTest` fija la salida actual de `procesarPedido()`. Estas pruebas solo usan el
-método público, así que servirán para comprobar que el refactor no cambia el comportamiento:
+- **Chain of Responsibility para las validaciones** (`ValidadorStock` → `ValidadorCliente`).
+  Las validaciones tienen dependencia real de orden y necesitan corte anticipado: si no hay
+  stock, no tiene sentido consultar la mora del cliente.
+- **Strategy para el descuento por tipo de cliente** (`DescuentoVip`, `DescuentoFrecuente`,
+  `DescuentoEstandar` y `SelectorEstrategiaDescuento`). Siempre aplica exactamente una regla,
+  elegida por el tipo de cliente, sin orden entre ellas. El selector es un mapa: el `if/else`
+  anidado desaparece.
+- **Extraer Clase** para persistencia (`PedidoRepository`, `ProductoRepository`) y notificación
+  (`NotificacionPedidoService`). `GestorPedidos` queda como orquestador de 74 líneas, sin SQL.
 
-| Caso | Pedido | Resultado del código original |
+#### Alternativas descartadas
+
+- **Lista de `Predicate<ContextoPedido>` en un `validarTodo()`:** evalúa todos los predicados
+  aunque el primero ya haya fallado, y no permite que un validador decida no delegar. La cadena
+  sí corta al primer rechazo.
+- **El descuento como un eslabón más de la cadena:** las reglas de descuento no tienen orden
+  entre sí ni necesitan cortar el flujo; modelarlas como cadena obligaría a un mecanismo
+  artificial para que solo una "gane". Strategy con un mapa lo resuelve con menos indirección.
+- **Un Facade sobre GestorPedidos:** ocultaría el problema a los clientes de la clase, pero
+  `GestorPedidos` seguiría teniendo siete razones internas para cambiar. La única corrección real
+  es separar responsabilidades.
+
+#### Antes y después
+
+| Métrica | Antes (`procesarPedido` original) | Después |
+|---|---|---|
+| Líneas del método | 104 | 22 |
+| Complejidad ciclomática | 23 | 2 |
+| Niveles máximos de anidamiento | 3 | 1 |
+| Sentencias SQL dentro de `GestorPedidos` | 9 | 0 |
+| Clases que hay que tocar para un tipo de cliente nuevo | `GestorPedidos` completo | 1 clase nueva + 1 entrada en el selector |
+
+**Misma salida con el nuevo diseño.** Las pruebas de `ProcesarPedidoTest` solo usan el método
+público `procesarPedido()`, así que valen para cualquier diseño interno. Pasan sin cambios antes
+y después del refactor:
+
+| Caso | Pedido | Resultado (antes y después) |
 |---|---|---|
 | VIP, más de $1.000.000 | 2 monitores | Confirmado, total $1.820.700 (15 %) |
 | FRECUENTE, más de 10 pedidos | 4 teclados | Confirmado, total $1.094.800 (8 %) |
@@ -97,11 +154,42 @@ método público, así que servirán para comprobar que el refactor no cambia el
 | Pedido sin ítems | lista vacía | Rechazado: "El pedido no contiene items" |
 | Moroso a las 10:00 | 1 mouse | Rechazado: "Cliente con deuda pendiente: $300000.0" |
 | Moroso a las 21:00 | 1 mouse | Confirmado, total $95.200 (excepción por horario) |
-| Cliente inexistente | 1 mouse | `EmptyResultDataAccessException`: la rama "Cliente no registrado" (línea 56) nunca se ejecuta |
+| Cliente inexistente | 1 mouse | Antes y después del refactor: `EmptyResultDataAccessException`; tras la corrección: Rechazado "Cliente no registrado" |
 
-El último caso es un defecto, no una decisión de diseño: `queryForObject` lanza excepción cuando
-no hay filas en lugar de devolver `null`. Se mantiene durante el refactor y se corrige después,
-en un commit propio.
+#### Hallazgos al caracterizar el código
 
-Siguiente paso: aplicar Chain of Responsibility a las validaciones, Strategy al descuento y
-extraer la persistencia y la notificación.
+Escribir las pruebas antes de refactorizar destapó defectos que no eran de diseño, sino de
+funcionamiento. Cada uno se trató por separado:
+
+1. **La rama "Cliente no registrado" nunca se ejecutaba.** `queryForObject` lanza
+   `EmptyResultDataAccessException` cuando no hay filas; no devuelve `null`. El refactor conservó
+   ese comportamiento a propósito (un refactor no debe cambiar la salida), y la corrección va en
+   su propio commit (`fix: rechazar cliente o producto inexistente...`), con `queryForList`.
+2. **La versión de referencia de la guía se saltaba la validación de stock.**
+   `encadenar()` devuelve el eslabón siguiente, y la guía asignaba ese valor de retorno como
+   primer validador (`this.primerValidador = stock.encadenar(cliente)`). La cadena empezaba en
+   `ValidadorCliente`. La prueba de stock insuficiente lo detectó; aquí la cadena arranca en
+   `stock`.
+3. **La versión de referencia de la guía perdía el rechazo de pedidos vacíos.** El
+   `ValidadorStock` de la guía no revisaba la lista vacía, y un pedido sin ítems se confirmaba
+   con total 0. Se recuperó la comprobación del código original.
+4. **`CALL IDENTITY()` no existe en H2 2.x en modo normal.** Solo lo acepta el modo `LEGACY`
+   (verificado en el código fuente de H2 2.4.240), por eso la URL de la base usa `MODE=LEGACY`.
+5. **El original no era transaccional.** Si fallaba una inserción de detalle, el pedido quedaba
+   a medias. `PedidoRepository.guardar()` es `@Transactional`, lo que además asegura que
+   `CALL IDENTITY()` lea el id en la misma conexión del `INSERT`.
+6. **La hora no era controlable.** El código original usaba `LocalTime.now()`, así que el caso
+   "moroso fuera del horario de corte" solo se podía probar después de las 20:00. Se inyectó un
+   `Clock` (único cambio al código copiado de la guía) y las pruebas fijan la hora.
+
+### Parte 2: crecimiento del proyecto
+
+En desarrollo.
+
+## Herramientas utilizadas
+
+- Java 26, Spring Boot 4.1.1, Spring JDBC (JdbcTemplate), H2 Database, Maven 3.9
+- JUnit, Spring Boot Test, Git, GitHub
+
+Se usó Spring Boot 4.1.1 en lugar de 3.x porque es la primera línea con soporte oficial para
+Java 26. Por la misma razón el starter web es `spring-boot-starter-webmvc`, su nombre en Boot 4.
